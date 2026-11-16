@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNS_FILE="${RUNS_FILE:-${STATE_DIR:-$ROOT/state}/runs.jsonl}"
+SINCE=""
+MODE="table"
+INCLUDE_DRY=1
+
+usage() {
+  cat <<'EOF'
+Usage: cost-report [--since YYYY-MM-DD] [--no-dry-run] [--csv | --json]
+
+Summarizes state/runs.jsonl (one record per run, dry runs included).
+  --since DATE    only runs on or after DATE (UTC)
+  --no-dry-run    leave dry runs out of the numbers
+  --csv           one row per run, for a spreadsheet
+  --json          raw records as a JSON array
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --since) SINCE="$2"; shift ;;
+    --no-dry-run) INCLUDE_DRY=0 ;;
+    --csv) MODE="csv" ;;
+    --json) MODE="json" ;;
+    -h | --help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 64 ;;
+  esac
+  shift
+done
+
+[ -s "$RUNS_FILE" ] || { echo "no runs recorded yet ($RUNS_FILE)" >&2; exit 0; }
+
+RECORDS="$(jq -cs --arg since "$SINCE" --argjson dry "$INCLUDE_DRY" '
+  map(select(($since == "" or .ts[0:10] >= $since) and ($dry == 1 or (.dry_run | not))))' "$RUNS_FILE")"
+
+case "$MODE" in
+  json) jq '.' <<<"$RECORDS" ;;
+  csv)
+    jq -r '
+      ["ts","dry_run","status","model","found","new","added","failed","cost_usd","input_tokens","output_tokens","cache_read_tokens","cache_creation_tokens","num_turns","wall_s"],
+      (.[] | [.ts,.dry_run,.status,.model,.found,.new,.added,.failed,.cost_usd,.input_tokens,.output_tokens,.cache_read_tokens,.cache_creation_tokens,.num_turns,.wall_s])
+      | @csv' <<<"$RECORDS"
+    ;;
+  table)
+    jq -r '
+      def sum(f): map(f // 0) | add // 0;
+      def r4: . * 10000 | round / 10000;
+      def line($label; $rs):
+        [$label, ($rs | length), ($rs | sum(.cost_usd) | r4), ($rs | sum(.input_tokens)),
+         ($rs | sum(.output_tokens)), ($rs | sum(.cache_read_tokens)), ($rs | sum(.added))] | @tsv;
+      "period\truns\tcost_usd\tinput_tok\toutput_tok\tcache_read_tok\ttasks_added",
+      (group_by(.ts[0:10])[] | line(.[0].ts[0:10]; .)),
+      line("TOTAL"; .),
+      "",
+      "avg cost/run: \((if length > 0 then (sum(.cost_usd) / length | r4) else 0 end)) USD",
+      "dry runs: \(map(select(.dry_run)) | length), failed runs: \(map(select(.status != "ok")) | length)"
+    ' <<<"$RECORDS" | column -t -s "$(printf '\t')"
+    ;;
+esac
