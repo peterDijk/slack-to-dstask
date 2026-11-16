@@ -24,6 +24,32 @@ bin/cost-report --csv > runs.csv       # for a spreadsheet
 tests/run.sh                           # offline tests, fake claude and dstask
 ```
 
+## Shell shortcuts
+
+Add this to `~/.zshrc` to run everything from any directory. If you already have a `ds-fetch` function there, replace it with this block.
+
+```zsh
+export SLACK_TO_DSTASK_HOME="$HOME/sideprojects/slack-to-dstask"
+
+ds-fetch()   { "$SLACK_TO_DSTASK_HOME/bin/slack-to-dstask" "$@"; }
+ds-preview() { ds-fetch --dry-run "$@"; }
+ds-cost()    { "$SLACK_TO_DSTASK_HOME/bin/cost-report" "$@"; }
+ds-runs()    { tail -n "${1:-10}" "$SLACK_TO_DSTASK_HOME/state/runs.jsonl" \
+                 | jq -r '[.ts, .status, (if .dry_run then "dry" else "real" end), "$\((.cost_usd // 0) * 10000 | round / 10000)", "added=\(.added)"] | join("  ")'; }
+ds-seen()    { jq -r 'to_entries | sort_by(.value.imported_at)[] | "\(.value.imported_at)  \(.value.title)"' \
+                 "$SLACK_TO_DSTASK_HOME/state/seen.json" | tail -n "${1:-20}"; }
+ds-test()    { "$SLACK_TO_DSTASK_HOME/tests/run.sh"; }
+```
+
+| Command | What it does |
+|---|---|
+| `ds-fetch [flags]` | import reacted messages into dstask, takes every flag from above |
+| `ds-preview [flags]` | same as `ds-fetch --dry-run` |
+| `ds-cost [flags]` | token cost report, e.g. `ds-cost --since 2026-11-01`, `ds-cost --csv` |
+| `ds-runs [N]` | last N runs (default 10): time, status, dry or real, cost, tasks added |
+| `ds-seen [N]` | last N imported messages (default 20), to see what was already picked up |
+| `ds-test` | run the offline test suite |
+
 ## Configuration
 
 Copy `config.example.env` to `config.env`. Precedence: CLI flags > environment > `config.env` > defaults.
