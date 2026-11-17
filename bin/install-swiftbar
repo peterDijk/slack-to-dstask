@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_DIR="${1:-$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true)}"
+
+if [ -z "$PLUGIN_DIR" ]; then
+  echo "usage: install-swiftbar [PLUGIN_DIR]" >&2
+  echo "SwiftBar plugin folder not found; pass it explicitly (SwiftBar > Preferences > Plugin Folder)." >&2
+  exit 64
+fi
+
+mkdir -p "$PLUGIN_DIR"
+rm -f "$PLUGIN_DIR/dstask.5m.sh"
+ln -sf "$ROOT/swiftbar/dstask.1m.sh" "$PLUGIN_DIR/dstask.1m.sh"
+echo "linked $PLUGIN_DIR/dstask.1m.sh"
+open -g "swiftbar://refreshallplugins" 2>/dev/null || true

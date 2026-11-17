@@ -49,7 +49,7 @@ fi
 : "${STATE_DIR:=$ROOT/state}"
 : "${DSTASK_BIN:=dstask}"
 : "${CLAUDE_BIN:=claude}"
-: "${ALLOWED_TOOLS:=mcp__claude_ai_Slack__slack_search_public_and_private}"
+: "${ALLOWED_TOOLS:=mcp__claude_ai_Slack__slack_search_public_and_private,mcp__claude_ai_Slack__slack_get_reactions}"
 : "${DISALLOWED_TOOLS:=Bash,Edit,Write,Read,WebFetch,WebSearch,Task,mcp__claude_ai_Slack__slack_send_message,mcp__claude_ai_Slack__slack_send_message_draft,mcp__claude_ai_Slack__slack_schedule_message,mcp__claude_ai_Slack__slack_add_reaction,mcp__claude_ai_Slack__slack_create_canvas,mcp__claude_ai_Slack__slack_update_canvas,mcp__claude_ai_Slack__slack_create_conversation,mcp__claude_ai_Slack__slack_create_list,mcp__claude_ai_Slack__slack_update_list,mcp__claude_ai_Slack__slack_add_list_record,mcp__claude_ai_Slack__slack_update_list_record,mcp__claude_ai_Slack__slack_get_file_upload_url,mcp__claude_ai_Slack__slack_complete_file_upload}"
 DRY_RUN=0
 
@@ -157,7 +157,7 @@ if [ "$DRY_RUN" = 0 ]; then acquire_lock; fi
 [ -f "$SEEN_FILE" ] || echo '{}' >"$SEEN_FILE"
 
 AFTER="$(after_date)"
-PROMPT="$(sed -e "s/{{EMOJI}}/$SLACK_EMOJI/g" -e "s/{{AFTER}}/$AFTER/g" -e "s/{{MAX_PAGES}}/$MAX_PAGES/g" "$ROOT/prompt.md")"
+PROMPT="$(sed -e "s/{{EMOJI}}/$SLACK_EMOJI/g" -e "s/{{AFTER}}/$AFTER/g" -e "s/{{MAX_PAGES}}/$MAX_PAGES/g" -e "s/{{TITLE_MAX}}/$TITLE_MAX/g" "$ROOT/prompt.md")"
 
 set +e
 ENVELOPE="$(printf '%s' "$PROMPT" | "$CLAUDE_BIN" -p \
@@ -186,7 +186,7 @@ if ! ITEMS="$(printf '%s\n' "$RESULT_TEXT" | sed '/^```/d' | jq -c 'if type == "
 fi
 
 FOUND="$(jq 'length' <<<"$ITEMS")"
-CANDIDATES="$(jq -c --argjson max "$TITLE_MAX" -f "$ROOT/lib/normalize.jq" <<<"$ITEMS")"
+CANDIDATES="$(jq -c --argjson max "$TITLE_MAX" --arg emoji "$SLACK_EMOJI" -f "$ROOT/lib/normalize.jq" <<<"$ITEMS")"
 INVALID="$((FOUND - $(jq 'length' <<<"$CANDIDATES")))"
 NEW_ITEMS="$(jq -c --slurpfile seen "$SEEN_FILE" 'map(select(($seen[0][.key]) | not))' <<<"$CANDIDATES")"
 NEW="$(jq 'length' <<<"$NEW_ITEMS")"
@@ -196,7 +196,7 @@ echo "found=$FOUND invalid=$INVALID new=$NEW (emoji=:$SLACK_EMOJI: since $AFTER,
 while IFS= read -r item; do
   [ -n "$item" ] || continue
   title="$(jq -r '.title' <<<"$item")"
-  notes="$(jq -r '"\(.permalink) (\(.author) in #\(.channel))"' <<<"$item")"
+  notes="$(jq -r '"\(.permalink) (\(.author) in #\(.channel))" + (if (.reactions | length) > 0 then " reactions: " + (.reactions | join(", ")) else "" end)' <<<"$item")"
   key="$(jq -r '.key' <<<"$item")"
 
   cmd=("$DSTASK_BIN" add)
@@ -216,8 +216,9 @@ while IFS= read -r item; do
   if "${cmd[@]}" >/dev/null; then
     ADDED=$((ADDED + 1))
     tmp="$(mktemp "$STATE_DIR/seen.XXXXXX")"
-    jq --arg k "$key" --arg t "$title" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '.[$k] = {imported_at: $ts, title: $t}' "$SEEN_FILE" >"$tmp" && mv "$tmp" "$SEEN_FILE"
+    jq --arg k "$key" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson item "$item" \
+      '.[$k] = {imported_at: $ts, title: $item.title, permalink: $item.permalink, channel: $item.channel, author: $item.author}' \
+      "$SEEN_FILE" >"$tmp" && mv "$tmp" "$SEEN_FILE"
   else
     FAILED=$((FAILED + 1))
     echo "warning: dstask add failed for $key" >&2

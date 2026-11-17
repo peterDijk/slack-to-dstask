@@ -2,7 +2,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/slack-to-dstask.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 PASS=0
@@ -70,6 +70,8 @@ run
 check "real run adds both" test "$(adds)" -eq 2
 check "real run syncs once" test "$(grep -c '^sync' "$FAKE_DSTASK_LOG")" -eq 1
 check "real run records seen" test "$(jq 'length' "$STATE_DIR/seen.json")" -eq 2
+check "seen entry stores permalink" test "$(jq -r '.["C1:1.1"].permalink' "$STATE_DIR/seen.json")" = "https://x.slack.com/archives/C1/p1.1"
+check "seen entry stores channel and author" test "$(jq -r '.["C1:1.1"] | .channel + "/" + .author' "$STATE_DIR/seen.json")" = "general/Ann"
 check "tag and notes separator passed" grep -q '+slack / https://x.slack.com/archives/C1/p1.1' "$FAKE_DSTASK_LOG"
 run
 check "second run dedupes" test "$(adds)" -eq 2
@@ -125,6 +127,15 @@ run --dry-run; run
 check "report table has total" bash -c '"$1/bin/cost-report" | grep -q TOTAL' _ "$ROOT"
 check "report excludes dry runs on request" bash -c '"$1/bin/cost-report" --no-dry-run --json | jq -e "length == 1" >/dev/null' _ "$ROOT"
 check "report csv has header and rows" test "$("$ROOT/bin/cost-report" --csv | wc -l | tr -d ' ')" -eq 3
+
+new_env todo
+envelope "[$(item C1 1.1 'hey can someone look at the export bug?' | jq -c '. + {todo: "Investigate export bug +urgent", reactions: ["eyes:3","tornado:1","bad emoji!:1"]}'),$(item C1 2.2 'plain text fallback')]" >"$FAKE_CLAUDE_OUTPUT"
+run
+check "todo line used as title" grep -q '^add Investigate export bug' "$FAKE_DSTASK_LOG"
+check "todo cannot inject tag" bash -c '! grep -qE "(^| )\+urgent( |$)" "$1"' _ "$FAKE_DSTASK_LOG"
+check "reactions in notes" grep -q 'reactions: eyes:3$' "$FAKE_DSTASK_LOG"
+check "trigger emoji and junk reactions dropped" bash -c '! grep -qE "tornado:|bad" "$1"' _ "$FAKE_DSTASK_LOG"
+check "missing todo falls back to text" grep -q '^add plain text fallback' "$FAKE_DSTASK_LOG"
 
 echo
 echo "$PASS passed, $FAIL failed"
